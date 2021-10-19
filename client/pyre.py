@@ -318,7 +318,8 @@ def _check_configuration(configuration: configuration_module.Configuration) -> N
 @click.option(
     "--output",
     type=click.Choice(
-        [command_arguments.TEXT, command_arguments.JSON], case_sensitive=False
+        [command_arguments.TEXT, command_arguments.JSON, command_arguments.SARIF],
+        case_sensitive=False,
     ),
     default=command_arguments.TEXT,
     help="How to format output.",
@@ -1174,7 +1175,6 @@ def servers_stop(context: click.Context) -> int:
     """
     Stop all running servers.
     """
-    command_argument: command_arguments.CommandArguments = context.obj["arguments"]
     return v2.servers.run_stop()
 
 

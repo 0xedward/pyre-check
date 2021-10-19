@@ -577,7 +577,7 @@ let missing_builtin_classes, missing_typing_classes, missing_typing_extensions_c
       }
     in
     {
-      Class.name = Node.create_with_default_location (Reference.create name);
+      Class.name = Reference.create name;
       base_arguments = List.map bases ~f:create_base @ List.map metaclasses ~f:create_metaclass;
       body;
       decorators = [];
@@ -599,7 +599,6 @@ let missing_builtin_classes, missing_typing_classes, missing_typing_extensions_c
                  (Ast.Expression.create_name ~location:Location.any "typing.Callable.__call__"));
           annotation = Some (Type.expression Type.object_primitive);
           value = Node.create_with_default_location (Expression.Constant Constant.NoneLiteral);
-          parent = Some (Reference.create "typing.Callable");
         };
     ]
     |> List.map ~f:Node.create_with_default_location
@@ -610,9 +609,7 @@ let missing_builtin_classes, missing_typing_classes, missing_typing_extensions_c
       {
         signature =
           {
-            name =
-              Node.create_with_default_location
-                (Reference.combine parent (Reference.create "__get__"));
+            name = Reference.combine parent (Reference.create "__get__");
             parameters =
               [
                 Node.create_with_default_location
@@ -688,9 +685,7 @@ let missing_builtin_classes, missing_typing_classes, missing_typing_extensions_c
         {
           signature =
             {
-              name =
-                Reference.create "typing.GenericMeta.__getitem__"
-                |> Node.create_with_default_location;
+              name = Reference.create "typing.GenericMeta.__getitem__";
               parameters =
                 [
                   { Parameter.name = "cls"; value = None; annotation = None }
@@ -792,7 +787,7 @@ let register_class_definitions ({ Source.source_path = { SourcePath.qualifier; _
     | _ -> classes
   in
   let register new_annotations { Node.location; value = { Class.name; _ } as definition } =
-    let primitive = Reference.show (Node.value name) in
+    let primitive = Reference.show name in
     let definition =
       match primitive with
       | "type" ->

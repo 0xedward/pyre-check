@@ -8,16 +8,30 @@
 open Core
 open Pyre
 
+let name_location
+    ~offset_columns
+    ~body_location:{ Location.start = { line = start_line; column = start_column }; _ }
+    name_string
+  =
+  let start_column = start_column + offset_columns in
+  let stop_column_ =
+    let name_length = name_string |> String.length in
+    start_column + name_length
+  in
+  Location.
+    {
+      start = { line = start_line; column = start_column };
+      stop = { line = start_line; column = stop_column_ };
+    }
+
+
 module Assign = struct
   type t = {
     target: Expression.t;
     annotation: Expression.t option;
     value: Expression.t;
-    parent: Reference.t option;
   }
   [@@deriving compare, eq, sexp, show, hash, to_yojson]
-
-  let is_static_attribute_initialization { parent; _ } = Option.is_some parent
 
   let location_insensitive_compare left right =
     match Expression.location_insensitive_compare left.target right.target with
@@ -27,10 +41,7 @@ module Assign = struct
           Option.compare Expression.location_insensitive_compare left.annotation right.annotation
         with
         | x when not (Int.equal x 0) -> x
-        | _ -> (
-            match Expression.location_insensitive_compare left.value right.value with
-            | x when not (Int.equal x 0) -> x
-            | _ -> [%compare: Reference.t option] left.parent right.parent))
+        | _ -> Expression.location_insensitive_compare left.value right.value)
 end
 
 module Import = struct
@@ -168,7 +179,7 @@ end
 
 and Class : sig
   type t = {
-    name: Reference.t Node.t;
+    name: Reference.t;
     base_arguments: Expression.Call.Argument.t list;
     body: Statement.t list;
     decorators: Decorator.t list;
@@ -194,10 +205,12 @@ and Class : sig
 
   val init_subclass_arguments : t -> Expression.Call.Argument.t list
 
+  val name_location : body_location:Location.t -> t -> Location.t
+
   type class_t = t [@@deriving compare, eq, sexp, show, hash, to_yojson]
 end = struct
   type t = {
-    name: Reference.t Node.t;
+    name: Reference.t;
     base_arguments: Expression.Call.Argument.t list;
     body: Statement.t list;
     decorators: Decorator.t list;
@@ -208,7 +221,7 @@ end = struct
   type class_t = t [@@deriving compare, eq, sexp, show, hash, to_yojson]
 
   let location_insensitive_compare left right =
-    match Node.location_insensitive_compare [%compare: Reference.t] left.name right.name with
+    match Reference.compare left.name right.name with
     | x when not (Int.equal x 0) -> x
     | _ -> (
         match
@@ -236,10 +249,10 @@ end = struct
                       right.top_level_unbound_names)))
 
 
-  let toplevel_define { name = { Node.value; _ }; top_level_unbound_names; body; _ } =
+  let toplevel_define { name; top_level_unbound_names; body; _ } =
     Define.create_class_toplevel
       ~unbound_names:top_level_unbound_names
-      ~parent:value
+      ~parent:name
       ~statements:body
 
 
@@ -319,12 +332,17 @@ end = struct
         | Some _ -> true
         | None -> false)
       base_arguments
+
+
+  let name_location ~body_location { name; _ } =
+    let class_and_space_offset = 6 in
+    name |> Reference.last |> name_location ~offset_columns:class_and_space_offset ~body_location
 end
 
 and Define : sig
   module Signature : sig
     type t = {
-      name: Reference.t Node.t;
+      name: Reference.t;
       parameters: Expression.Parameter.t list;
       decorators: Decorator.t list;
       return_annotation: Expression.t option;
@@ -427,9 +445,11 @@ and Define : sig
     statements:Statement.t list ->
     t
 
-  val name : t -> Reference.t Node.t
+  val name : t -> Reference.t
 
   val unqualified_name : t -> Identifier.t
+
+  val name_location : body_location:Location.t -> t -> Location.t
 
   val self_identifier : t -> Identifier.t
 
@@ -485,7 +505,7 @@ and Define : sig
 end = struct
   module Signature = struct
     type t = {
-      name: Reference.t Node.t;
+      name: Reference.t;
       parameters: Expression.Parameter.t list;
       decorators: Decorator.t list;
       return_annotation: Expression.t option;
@@ -499,7 +519,7 @@ end = struct
     [@@deriving compare, eq, sexp, show, hash, to_yojson]
 
     let location_insensitive_compare left right =
-      match Node.location_insensitive_compare [%compare: Reference.t] left.name right.name with
+      match Reference.compare left.name right.name with
       | x when not (Int.equal x 0) -> x
       | _ -> (
           match
@@ -539,7 +559,7 @@ end = struct
 
     let create_toplevel ~qualifier =
       {
-        name = Reference.create ?prefix:qualifier "$toplevel" |> Node.create_with_default_location;
+        name = Reference.create ?prefix:qualifier "$toplevel";
         parameters = [];
         decorators = [];
         return_annotation = None;
@@ -552,8 +572,7 @@ end = struct
 
     let create_class_toplevel ~parent =
       {
-        name =
-          Reference.create ~prefix:parent "$class_toplevel" |> Node.create_with_default_location;
+        name = Reference.create ~prefix:parent "$class_toplevel";
         parameters = [];
         decorators = [];
         return_annotation = None;
@@ -564,7 +583,7 @@ end = struct
       }
 
 
-    let unqualified_name { name; _ } = Reference.last (Node.value name)
+    let unqualified_name { name; _ } = Reference.last name
 
     let self_identifier { parameters; _ } =
       match parameters with
@@ -763,6 +782,18 @@ end = struct
 
   let unqualified_name { signature; _ } = Signature.unqualified_name signature
 
+  let name_location ~body_location define =
+    if Signature.is_class_toplevel define.signature then
+      (* This causes lookup.ml to skip class toplevel defines, which is what we want because they
+         are handled by reading class bodies. *)
+      Location.any
+    else
+      let def_and_space_offset = 4 in
+      define
+      |> unqualified_name
+      |> name_location ~offset_columns:def_and_space_offset ~body_location
+
+
   let self_identifier { signature; _ } = Signature.self_identifier signature
 
   let is_method { signature; _ } = Signature.is_method signature
@@ -921,10 +952,7 @@ end = struct
       else
         { Node.location; value }
     in
-    {
-      Node.location;
-      value = Statement.Assign { Assign.target; annotation = None; value; parent = None };
-    }
+    { Node.location; value = Statement.Assign { Assign.target; annotation = None; value } }
 
 
   let location_insensitive_compare left right =
@@ -1031,7 +1059,6 @@ end = struct
                 Assign.target;
                 annotation = None;
                 value = Node.create ~location (Expression.Constant Constant.Ellipsis);
-                parent = None;
               };
         };
         {
@@ -1169,7 +1196,7 @@ end = struct
       in
       match target with
       | Some target ->
-          let assign = { Assign.target; annotation = None; value = enter_call; parent = None } in
+          let assign = { Assign.target; annotation = None; value = enter_call } in
           Node.create ~location (Statement.Assign assign)
       | None -> Node.create ~location (Statement.Expression enter_call)
     in
@@ -1360,7 +1387,7 @@ end = struct
               };
         }
     in
-    { Assign.target; annotation = None; value; parent = None }
+    { Assign.target; annotation = None; value }
 end
 
 include Statement
@@ -1414,12 +1441,10 @@ module PrettyPrinter = struct
         Format.fprintf formatter "%a@;%a" pp_statement_t statement pp_statement_list statement_list
 
 
-  and pp_assign formatter { Assign.target; annotation; value; parent } =
+  and pp_assign formatter { Assign.target; annotation; value } =
     Format.fprintf
       formatter
-      "%a%a%a = %a"
-      pp_reference_option
-      parent
+      "%a%a = %a"
       Expression.pp
       target
       pp_expression_option
@@ -1435,7 +1460,7 @@ module PrettyPrinter = struct
       pp_decorators
       decorators
       Reference.pp
-      (Node.value name)
+      name
       Expression.pp_expression_argument_list
       base_arguments
       pp_statement_list
@@ -1467,7 +1492,7 @@ module PrettyPrinter = struct
       parent
       (if Option.is_some parent then "#" else "")
       Reference.pp
-      (Node.value name)
+      name
       Expression.pp_expression_parameter_list
       parameters
       return_annotation

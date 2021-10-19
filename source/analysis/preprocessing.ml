@@ -460,13 +460,11 @@ let qualify
             aliases = Map.set aliases ~key:name ~data:(global_alias ~qualifier ~name);
             skip = Set.add skip location;
           }
-      | Class { Class.name = { Node.value = name; _ }; _ } ->
+      | Class { Class.name; _ } ->
           { scope with aliases = Map.set aliases ~key:name ~data:(global_alias ~qualifier ~name) }
-      | Define { Define.signature = { name = { Node.value = name; _ }; _ }; _ } when is_in_function
-        ->
+      | Define { Define.signature = { name; _ }; _ } when is_in_function ->
           qualify_function_name ~scope name |> fst
-      | Define { Define.signature = { name = { Node.value = name; _ }; _ }; _ }
-        when not is_in_function ->
+      | Define { Define.signature = { name; _ }; _ } when not is_in_function ->
           { scope with aliases = Map.set aliases ~key:name ~data:(global_alias ~qualifier ~name) }
       | If { If.body; orelse; _ } ->
           let scope = explore_scope ~scope body in
@@ -596,7 +594,7 @@ let qualify
     =
     let scope, value =
       let local_alias ~qualifier ~name = { name; qualifier; is_forward_reference = false } in
-      let qualify_assign { Assign.target; annotation; value; parent } =
+      let qualify_assign { Assign.target; annotation; value } =
         let qualify_value ~qualify_potential_alias_strings ~scope = function
           | { Node.value = Expression.Constant (Constant.String _); _ } ->
               (* String literal assignments might be type aliases. *)
@@ -723,27 +721,13 @@ let qualify
           in
           qualify_value ~scope:target_scope ~qualify_potential_alias_strings value
         in
-        ( target_scope,
-          {
-            Assign.target;
-            annotation = qualified_annotation;
-            value = qualified_value;
-            parent = (parent >>| fun parent -> qualify_reference ~scope parent);
-          } )
+        target_scope, { Assign.target; annotation = qualified_annotation; value = qualified_value }
       in
       let qualify_define
           ({ qualifier; _ } as original_scope)
           ({
              Define.signature =
-               {
-                 name = { Node.value = name; location = name_location };
-                 parameters;
-                 decorators;
-                 return_annotation;
-                 parent;
-                 nesting_define;
-                 _;
-               };
+               { name; parameters; decorators; return_annotation; parent; nesting_define; _ };
              body;
              _;
            } as define)
@@ -775,7 +759,7 @@ let qualify
         let signature =
           {
             define.signature with
-            name = { Node.value = name; location = name_location };
+            name;
             parameters;
             decorators;
             return_annotation;
@@ -785,10 +769,7 @@ let qualify
         in
         original_scope_with_alias, { define with signature; body }
       in
-      let qualify_class
-          ({ Class.name = { Node.value = name; location }; base_arguments; body; decorators; _ } as
-          definition)
-        =
+      let qualify_class ({ Class.name; base_arguments; body; decorators; _ } as definition) =
         let scope = { scope with is_top_level = false } in
         let qualify_base ({ Call.Argument.value; _ } as argument) =
           {
@@ -809,17 +790,8 @@ let qualify
             let scope, statement =
               match value with
               | Statement.Define
-                  ({
-                     signature =
-                       {
-                         name = { Node.value = name; location = name_location };
-                         parameters;
-                         return_annotation;
-                         decorators;
-                         _;
-                       };
-                     _;
-                   } as define) ->
+                  ({ signature = { name; parameters; return_annotation; decorators; _ }; _ } as
+                  define) ->
                   let _, define = qualify_define original_scope define in
                   let _, parameters = qualify_parameters ~scope parameters in
                   let return_annotation =
@@ -845,8 +817,7 @@ let qualify
                   let signature =
                     {
                       define.signature with
-                      name =
-                        { Node.value = qualify_reference ~scope name; location = name_location };
+                      name = qualify_reference ~scope name;
                       parameters;
                       decorators;
                       return_annotation;
@@ -862,7 +833,7 @@ let qualify
         {
           definition with
           (* Ignore aliases, imports, etc. when declaring a class name. *)
-          Class.name = { Node.location; value = qualify_if_needed ~qualifier:scope.qualifier name };
+          Class.name = qualify_if_needed ~qualifier:scope.qualifier name;
           base_arguments = List.map base_arguments ~f:qualify_base;
           body;
           decorators;
@@ -892,7 +863,7 @@ let qualify
                 message;
                 origin;
               } )
-      | Class ({ name = { Node.value = name; _ }; _ } as definition) ->
+      | Class ({ name; _ } as definition) ->
           let scope =
             {
               scope with
@@ -2169,13 +2140,12 @@ let replace_mypy_extensions_stub
                          special = false;
                        })));
           value = node (Expression.Constant Constant.Ellipsis);
-          parent = None;
         }
       |> node
     in
     let replace_typed_dictionary_define = function
       | { Node.location; value = Statement.Define { signature = { name; _ }; _ } }
-        when String.equal (Reference.show (Node.value name)) "TypedDict" ->
+        when String.equal (Reference.show name) "TypedDict" ->
           typed_dictionary_stub ~location
       | statement -> statement
     in
@@ -2228,7 +2198,6 @@ let expand_typed_dictionary_declarations
                              |> Node.create ~location;
                            annotation = Some value;
                            value = Node.create ~location (Expression.Constant Constant.Ellipsis);
-                           parent = Some class_reference;
                          }
                       |> Node.create ~location)
                 | _ -> None
@@ -2258,7 +2227,7 @@ let expand_typed_dictionary_declarations
             Some
               (Statement.Class
                  {
-                   name = Node.create ~location class_reference;
+                   name = class_reference;
                    base_arguments =
                      ([
                         {
@@ -2349,7 +2318,7 @@ let expand_typed_dictionary_declarations
           |> Option.value ~default:value
       | Class
           {
-            name = { Node.value = class_name; _ };
+            name = class_name;
             base_arguments =
               {
                 Call.Argument.name = None;
@@ -2544,7 +2513,6 @@ let expand_named_tuples ({ Source.statements; _ } as source) =
           Assign.target = Reference.create ~prefix:parent "_fields" |> from_reference ~location;
           annotation = Some annotation;
           value;
-          parent = Some parent;
         }
       |> Node.create ~location
     in
@@ -2582,7 +2550,6 @@ let expand_named_tuples ({ Source.statements; _ } as source) =
               Assign.target;
               annotation = Some annotation;
               value = Node.create (Expression.Constant Constant.Ellipsis) ~location;
-              parent = Some parent;
             }
           |> Node.create ~location
         in
@@ -2652,7 +2619,6 @@ let expand_named_tuples ({ Source.statements; _ } as source) =
                                }));
                      annotation = None;
                      value = Node.create (Expression.Name (Identifier name)) ~location;
-                     parent = None;
                    })
                 ~location
             in
@@ -2663,7 +2629,7 @@ let expand_named_tuples ({ Source.statements; _ } as source) =
           {
             signature =
               {
-                name = Node.create ~location (Reference.create ~prefix:parent name);
+                name = Reference.create ~prefix:parent name;
                 parameters = self_parameter :: parameters;
                 decorators = [];
                 return_annotation = Some return_annotation;
@@ -2688,12 +2654,8 @@ let expand_named_tuples ({ Source.statements; _ } as source) =
     in
     let value =
       match value with
-      | Statement.Assign
-          {
-            Assign.target = { Node.value = Name name; location = target_location };
-            value = expression;
-            _;
-          } -> (
+      | Statement.Assign { Assign.target = { Node.value = Name name; _ }; value = expression; _ }
+        -> (
           let name = name_to_reference name >>| Reference.delocalize in
           match extract_attributes expression, name with
           | Some attributes, Some name
@@ -2706,14 +2668,14 @@ let expand_named_tuples ({ Source.statements; _ } as source) =
               in
               Statement.Class
                 {
-                  Class.name = Node.create ~location:target_location name;
+                  Class.name;
                   base_arguments = [tuple_base ~location];
                   body = constructors @ attributes;
                   decorators = [];
                   top_level_unbound_names = [];
                 }
           | _ -> value)
-      | Class ({ Class.name = { Node.value = name; _ }; base_arguments; body; _ } as original) ->
+      | Class ({ Class.name; base_arguments; body; _ } as original) ->
           let is_named_tuple_primitive = function
             | {
                 Call.Argument.value =
@@ -2772,7 +2734,7 @@ let expand_named_tuples ({ Source.statements; _ } as source) =
                             Statement.Define { Define.signature = { Define.Signature.name; _ }; _ };
                           _;
                         } ->
-                          String.equal (Reference.last (Node.value name)) generated_name
+                          String.equal (Reference.last name) generated_name
                       | _ -> false
                     in
                     if
@@ -2839,7 +2801,7 @@ let expand_new_types ({ Source.statements; source_path = { SourcePath.qualifier;
                               {
                                 Node.value =
                                   Constant (Constant.String { StringLiteral.value = name; _ });
-                                location = name_location;
+                                _;
                               };
                             _;
                           };
@@ -2860,7 +2822,7 @@ let expand_new_types ({ Source.statements; source_path = { SourcePath.qualifier;
               {
                 signature =
                   {
-                    name = Node.create ~location (Reference.create ~prefix:name "__init__");
+                    name = Reference.create ~prefix:name "__init__";
                     parameters =
                       [
                         Parameter.create ~location ~name:"self" ();
@@ -2882,7 +2844,7 @@ let expand_new_types ({ Source.statements; source_path = { SourcePath.qualifier;
           in
           Statement.Class
             {
-              Class.name = Node.create ~location:name_location name;
+              Class.name;
               base_arguments = [base_argument];
               body = [constructor];
               decorators = [];
@@ -2913,7 +2875,7 @@ let expand_sqlalchemy_declarative_base ({ Source.statements; _ } as source) =
         in
         Statement.Class
           {
-            name = Node.create ~location class_name_reference;
+            name = class_name_reference;
             base_arguments = [metaclass];
             decorators = [];
             body = [Node.create ~location Statement.Pass];
@@ -2952,7 +2914,7 @@ let populate_nesting_defines ({ Source.statements; _ } as source) =
      value =
        Define
          {
-           Define.signature = { Define.Signature.name = { Node.value = name; _ }; _ } as signature;
+           Define.signature = { Define.Signature.name; _ } as signature;
            captures;
            unbound_names;
            body;
@@ -3787,7 +3749,7 @@ let mangle_private_attributes source =
       match state, Node.value statement with
       | _, Statement.Class { name; _ } ->
           let mangling_prefix =
-            Node.value name
+            name
             |> Reference.last
             |> String.lstrip ~drop:(fun character -> Char.equal character '_')
           in
@@ -3812,31 +3774,16 @@ let mangle_private_attributes source =
           | _ -> parent
         in
         match state, value with
-        | _, Statement.Assign ({ parent; _ } as assign) ->
-            {
-              statement with
-              Node.value = Statement.Assign { assign with parent = parent >>| mangle_parent_name };
-            }
-        | ( class_name :: _,
-            Statement.Class ({ name = { Node.value = name; _ } as name_node; _ } as class_value) )
+        | class_name :: _, Statement.Class ({ name; _ } as class_value)
           when should_mangle (Reference.last name) ->
             {
               statement with
-              value =
-                Statement.Class
-                  {
-                    class_value with
-                    name = { name_node with value = mangle_reference class_name name };
-                  };
+              value = Statement.Class { class_value with name = mangle_reference class_name name };
             }
         | ( class_name :: _,
             Statement.Define
-              ({
-                 Define.signature =
-                   { Define.Signature.name = { Node.value = name; _ } as name_node; parent; _ } as
-                   signature;
-                 _;
-               } as define) )
+              ({ Define.signature = { Define.Signature.name; parent; _ } as signature; _ } as
+              define) )
           when should_mangle (Reference.last name) ->
             {
               statement with
@@ -3847,7 +3794,7 @@ let mangle_private_attributes source =
                     signature =
                       {
                         signature with
-                        name = { name_node with value = mangle_reference class_name name };
+                        name = mangle_reference class_name name;
                         parent = parent >>| mangle_parent_name;
                       };
                   };
@@ -4187,7 +4134,6 @@ let expand_pytorch_register_buffer source =
                     |> from_reference ~location;
                   annotation;
                   value = initial_value;
-                  parent = None;
                 }
               |> Node.create ~location:statement_location;
             ] )

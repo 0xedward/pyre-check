@@ -2643,7 +2643,7 @@ let typeshed_stubs ?(include_helper_builtins = true) () =
 
 let mock_signature =
   {
-    Define.Signature.name = Node.create_with_default_location (Reference.create "$empty");
+    Define.Signature.name = Reference.create "$empty";
     parameters = [];
     decorators = [];
     return_annotation = None;
@@ -3004,7 +3004,7 @@ let assert_equivalent_attributes ~context source expected =
     in
     let get_name_if_class { Node.value; _ } =
       match value with
-      | Statement.Class { Class.name = { Node.value; _ }; _ } -> Some (Reference.show value)
+      | Statement.Class { Class.name; _ } -> Some (Reference.show name)
       | _ -> None
     in
     List.map ~f:Source.statements expected

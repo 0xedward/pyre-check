@@ -10,11 +10,8 @@ module Assign : sig
     target: Expression.t;
     annotation: Expression.t option;
     value: Expression.t;
-    parent: Reference.t option;
   }
   [@@deriving compare, eq, sexp, show, hash]
-
-  val is_static_attribute_initialization : t -> bool
 
   val location_insensitive_compare : t -> t -> int
 end
@@ -90,7 +87,7 @@ end
 
 and Class : sig
   type t = {
-    name: Reference.t Node.t;
+    name: Reference.t;
     base_arguments: Expression.Call.Argument.t list;
     body: Statement.t list;
     decorators: Decorator.t list;
@@ -116,13 +113,15 @@ and Class : sig
 
   val init_subclass_arguments : t -> Expression.Call.Argument.t list
 
+  val name_location : body_location:Location.t -> t -> Location.t
+
   type class_t = t [@@deriving compare, eq, sexp, show, hash, to_yojson]
 end
 
 and Define : sig
   module Signature : sig
     type t = {
-      name: Reference.t Node.t;
+      name: Reference.t;
       parameters: Expression.Parameter.t list;
       decorators: Decorator.t list;
       return_annotation: Expression.t option;
@@ -219,9 +218,11 @@ and Define : sig
     statements:Statement.t list ->
     t
 
-  val name : t -> Reference.t Node.t
+  val name : t -> Reference.t
 
   val unqualified_name : t -> Identifier.t
+
+  val name_location : body_location:Location.t -> t -> Location.t
 
   val self_identifier : t -> Identifier.t
 

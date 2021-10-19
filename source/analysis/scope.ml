@@ -151,7 +151,7 @@ module Binding = struct
     | Statement.Assign { Assign.target; value; _ } ->
         let sofar = of_expression sofar value in
         of_unannotated_target ~kind:(Kind.AssignTarget None) sofar target
-    | Statement.Class { Class.name = { Node.value = name; _ }; base_arguments; decorators; _ } ->
+    | Statement.Class { Class.name; base_arguments; decorators; _ } ->
         let sofar =
           List.map decorators ~f:Decorator.to_expression |> List.fold ~init:sofar ~f:of_expression
         in
@@ -162,12 +162,7 @@ module Binding = struct
             ~f:(fun sofar { Expression.Call.Argument.value; _ } -> of_expression sofar value)
         in
         { kind = Kind.ClassName; name = Reference.show name; location } :: sofar
-    | Statement.Define
-        {
-          Define.signature =
-            { name = { Node.value = name; _ }; decorators; parameters; _ } as signature;
-          _;
-        } ->
+    | Statement.Define { Define.signature = { name; decorators; parameters; _ } as signature; _ } ->
         let sofar =
           List.map decorators ~f:Decorator.to_expression |> List.fold ~init:sofar ~f:of_expression
         in
@@ -410,7 +405,7 @@ module Scope = struct
           Format.asprintf
             "Cannot create a scope for define %a"
             Reference.pp
-            (Node.value (Statement.Define.name define))
+            (Statement.Define.name define)
         in
         failwith message
     | Some result -> result

@@ -815,19 +815,19 @@ struct
             statement
 
 
-    let forward ~key _ ~statement =
+    let forward ~statement_key _ ~statement =
       let resolution =
         TypeCheck.resolution_with_key
           ~global_resolution:Context.global_resolution
           ~local_annotations:Context.local_annotations
           ~parent:Context.parent
-          ~key
+          ~statement_key
           (module TypeCheck.DummyContext)
       in
       forward_statement ~resolution ~statement
 
 
-    let backward ~key:_ _ ~statement:_ = ()
+    let backward ~statement_key:_ _ ~statement:_ = ()
   end)
 end
 
@@ -839,9 +839,7 @@ let call_graph_of_define
   let module DefineFixpoint = DefineCallGraph (struct
     let global_resolution = TypeEnvironment.ReadOnly.global_resolution environment
 
-    let local_annotations =
-      TypeEnvironment.ReadOnly.get_local_annotations environment (Node.value name)
-
+    let local_annotations = TypeEnvironment.ReadOnly.get_local_annotations environment name
 
     let parent = parent
 

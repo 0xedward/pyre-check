@@ -24,9 +24,11 @@ module LocalErrorMap = struct
 
   let empty () = Int.Table.create ()
 
-  let set error_map ~key ~errors = Int.Table.set error_map ~key ~data:errors
+  let set error_map ~statement_key ~errors = Int.Table.set error_map ~key:statement_key ~data:errors
 
-  let append error_map ~key error = Int.Table.add_multi error_map ~key ~data:error
+  let append error_map ~statement_key ~error =
+    Int.Table.add_multi error_map ~key:statement_key ~data:error
+
 
   let all_errors error_map = Int.Table.data error_map |> List.concat
 end
@@ -38,17 +40,21 @@ module type Context = sig
 
   val define : Define.t Node.t
 
+  (* Where to store local annotations during the fixpoint. `None` discards them. *)
+  val resolution_fixpoint : LocalAnnotationMap.t option
+
+  (* Where to store errors found during the fixpoint. `None` discards them. *)
+  val error_map : LocalErrorMap.t option
+
   module Builder : Callgraph.Builder
 end
 
 module type Signature = sig
   type t [@@deriving eq]
 
-  val create : resolution:Resolution.t -> unit -> t
+  val create : resolution:Resolution.t -> t
 
-  val create_unreachable : unit -> t
-
-  val all_errors : t -> Error.t list
+  val unreachable : t
 
   val resolution : t -> Resolution.t option
 
@@ -267,17 +273,14 @@ module State (Context : Context) = struct
     not_consistent_with_boundary: Type.t option;
   }
 
-  and t = {
-    (* None means the state in unreachable *)
-    resolution: Resolution.t option;
-    resolution_fixpoint: LocalAnnotationMap.t;
-    error_map: LocalErrorMap.t;
-  }
+  (* None means the state in unreachable *)
+  and t =
+    | Unreachable
+    | Value of Resolution.t
 
-  let pp format { resolution; error_map; _ } =
-    match resolution with
-    | None -> Format.fprintf format "  <UNREACHABLE STATE>\n"
-    | Some resolution ->
+  let pp format = function
+    | Unreachable -> Format.fprintf format "  <UNREACHABLE STATE>\n"
+    | Value resolution ->
         let global_resolution = Resolution.global_resolution resolution in
         let expected =
           let parser = GlobalResolution.annotation_parser global_resolution in
@@ -309,7 +312,10 @@ module State (Context : Context) = struct
               (Error.Instantiated.location error)
               (Error.Instantiated.description error)
           in
-          List.map (LocalErrorMap.all_errors error_map) ~f:error_to_string
+          Context.error_map
+          >>| LocalErrorMap.all_errors
+          >>| List.map ~f:error_to_string
+          |> Option.value ~default:[]
           |> String.concat ~sep:"\n"
         in
         Format.fprintf
@@ -324,9 +330,9 @@ module State (Context : Context) = struct
   let show state = Format.asprintf "%a" pp state
 
   and equal left right =
-    match left.resolution, right.resolution with
-    | None, None -> true
-    | Some left_resolution, Some right_resolution ->
+    match left, right with
+    | Unreachable, Unreachable -> true
+    | Value left_resolution, Value right_resolution ->
         Map.equal
           RefinementUnit.equal
           (Resolution.annotations left_resolution)
@@ -338,21 +344,9 @@ module State (Context : Context) = struct
     | _, _ -> false
 
 
-  let create ~resolution () =
-    {
-      resolution = Some resolution;
-      resolution_fixpoint = LocalAnnotationMap.empty ();
-      error_map = LocalErrorMap.empty ();
-    }
+  let create ~resolution = Value resolution
 
-
-  let create_unreachable () =
-    {
-      resolution = None;
-      resolution_fixpoint = LocalAnnotationMap.empty ();
-      error_map = LocalErrorMap.empty ();
-    }
-
+  let unreachable = Unreachable
 
   let emit_error ~errors ~location ~kind =
     Error.create
@@ -496,15 +490,21 @@ module State (Context : Context) = struct
     errors, annotation
 
 
-  let all_errors { error_map; _ } = LocalErrorMap.all_errors error_map
+  let resolution = function
+    | Unreachable -> None
+    | Value resolution -> Some resolution
 
-  let resolution { resolution; _ } = resolution
+
+  let resolution_or_default ~default = function
+    | Unreachable -> default
+    | Value resolution -> resolution
+
 
   let less_or_equal ~left ~right =
-    match left.resolution, right.resolution with
-    | None, _ -> true
-    | _, None -> false
-    | Some left_resolution, Some right_resolution ->
+    match left, right with
+    | Unreachable, _ -> true
+    | _, Unreachable -> false
+    | Value left_resolution, Value right_resolution ->
         let entry_less_or_equal other less_or_equal ~key ~data sofar =
           sofar
           &&
@@ -568,7 +568,7 @@ module State (Context : Context) = struct
 
   let widening_threshold = 10
 
-  let add_fixpoint_threshold_reached_error error_map =
+  let add_fixpoint_threshold_reached_error () =
     let define = Context.define in
     let { Node.value = define_value; location = define_location } = define in
     match StatementDefine.is_toplevel define_value with
@@ -577,19 +577,21 @@ module State (Context : Context) = struct
         ()
     | false ->
         let kind =
-          let { Node.value = define; _ } = StatementDefine.name define_value in
+          let define = StatementDefine.name define_value in
           AnalysisError.AnalysisFailure (FixpointThresholdReached { define })
         in
         let location = Location.with_module ~qualifier:Context.qualifier define_location in
-        let key = [%hash: int * int] (Cfg.entry_index, 0) in
-        AnalysisError.create ~location ~kind ~define |> LocalErrorMap.append ~key error_map
+        let error = AnalysisError.create ~location ~kind ~define in
+        let statement_key = [%hash: int * int] (Cfg.entry_index, 0) in
+        let (_ : unit option) = Context.error_map >>| LocalErrorMap.append ~statement_key ~error in
+        ()
 
 
   let widen ~previous ~next ~iteration =
-    match previous.resolution, next.resolution with
-    | None, _ -> next
-    | _, None -> previous
-    | Some previous_resolution, Some next_resolution ->
+    match previous, next with
+    | Unreachable, _ -> next
+    | _, Unreachable -> previous
+    | Value previous_resolution, Value next_resolution ->
         let global_resolution = Resolution.global_resolution previous_resolution in
         let widen_annotations ~key:_ annotation =
           match annotation with
@@ -635,14 +637,9 @@ module State (Context : Context) = struct
                 (Resolution.temporary_annotations next_resolution);
           }
         in
-        let error_map = next.error_map in
         if iteration > widening_threshold then
-          add_fixpoint_threshold_reached_error error_map;
-        {
-          resolution = Some (Resolution.with_annotation_store next_resolution ~annotation_store);
-          resolution_fixpoint = next.resolution_fixpoint;
-          error_map;
-        }
+          add_fixpoint_threshold_reached_error ();
+        Value (Resolution.with_annotation_store next_resolution ~annotation_store)
 
 
   module Resolved = struct
@@ -874,7 +871,7 @@ module State (Context : Context) = struct
           in
           match Reference.as_list decorator_name |> List.rev with
           | "setter" :: decorated_property_name :: _ ->
-              if String.equal (Reference.last (Node.value name)) decorated_property_name then
+              if String.equal (Reference.last name) decorated_property_name then
                 errors
               else
                 emit_error
@@ -886,10 +883,7 @@ module State (Context : Context) = struct
                          decorator;
                          reason =
                            Error.SetterNameMismatch
-                             {
-                               actual = decorated_property_name;
-                               expected = Reference.last (Node.value name);
-                             };
+                             { actual = decorated_property_name; expected = Reference.last name };
                        })
           | _ -> errors
         else
@@ -992,7 +986,7 @@ module State (Context : Context) = struct
           |> fun errors -> add_variance_error ~errors annotation
     in
     let add_capture_annotations resolution errors =
-      let process_signature ({ Define.Signature.name = { Node.value = name; _ }; _ } as signature) =
+      let process_signature ({ Define.Signature.name; _ } as signature) =
         if Reference.is_local name then
           type_of_signature ~resolution signature
           |> Type.Variable.mark_all_variables_as_bound ~specific:outer_scope_variables
@@ -1081,9 +1075,7 @@ module State (Context : Context) = struct
             let name = name |> Identifier.sanitized in
             let is_dunder_new_method_for_named_tuple =
               Define.is_method define
-              && Reference.is_suffix
-                   ~suffix:(Reference.create ".__new__")
-                   (Node.value define.signature.name)
+              && Reference.is_suffix ~suffix:(Reference.create ".__new__") define.signature.name
               && Option.value_map
                    ~default:false
                    ~f:(name_is ~name:"typing.NamedTuple")
@@ -1449,7 +1441,8 @@ module State (Context : Context) = struct
                 errors
           | Top
           (* There's some other problem we already errored on *)
-          | Parametric _ ->
+          | Parametric _
+          | Tuple _ ->
               errors
           | Any when GlobalResolution.base_is_from_placeholder_stub global_resolution base -> errors
           | annotation ->
@@ -1693,7 +1686,7 @@ module State (Context : Context) = struct
                     }
                 | Type.Callable { Type.Callable.implementation; _ } ->
                     let original_implementation =
-                      resolve_reference_type ~resolution (Node.value name)
+                      resolve_reference_type ~resolution name
                       |> function
                       | Type.Callable { Type.Callable.implementation = original_implementation; _ }
                       | Type.Parametric
@@ -1866,7 +1859,7 @@ module State (Context : Context) = struct
         match return_annotation with
         | Some ({ Node.location; _ } as annotation) -> (
             match define with
-            | { Define.signature = { Define.Signature.name = { Node.value = name; _ }; _ }; _ }
+            | { Define.signature = { Define.Signature.name; _ }; _ }
               when String.equal (Reference.last name) "__new__" ->
                 (* TODO(T45018328): Error here. `__new__` is a special undecorated static method,
                    and we really ought to be checking its return type against typing.Type[Cls]. *)
@@ -1898,13 +1891,13 @@ module State (Context : Context) = struct
       resolution, errors
     in
     let state =
-      let resolution_fixpoint = LocalAnnotationMap.empty () in
-      let error_map = LocalErrorMap.empty () in
       let postcondition = Resolution.annotation_store resolution in
-      let key = [%hash: int * int] (Cfg.entry_index, 0) in
-      LocalAnnotationMap.set resolution_fixpoint ~key ~postcondition;
-      LocalErrorMap.set error_map ~key ~errors;
-      { resolution = Some resolution; resolution_fixpoint; error_map }
+      let statement_key = [%hash: int * int] (Cfg.entry_index, 0) in
+      let (_ : unit option) =
+        Context.resolution_fixpoint >>| LocalAnnotationMap.set ~statement_key ~postcondition
+      in
+      let (_ : unit option) = Context.error_map >>| LocalErrorMap.set ~statement_key ~errors in
+      Value resolution
     in
     state
 
@@ -1936,7 +1929,7 @@ module State (Context : Context) = struct
       let resolution, errors =
         let iterator_resolution, iterator_errors =
           let post_resolution, errors = forward_statement ~resolution ~statement:iterator in
-          Option.value post_resolution ~default:resolution, errors
+          resolution_or_default post_resolution ~default:resolution, errors
         in
         let iterator_errors =
           (* Don't throw Incompatible Variable errors on the generated iterator assign; we are
@@ -1956,7 +1949,7 @@ module State (Context : Context) = struct
       |> List.fold ~init:(resolution, errors) ~f:(fun (resolution, errors) statement ->
              let resolution, new_errors =
                let post_resolution, errors = forward_statement ~resolution ~statement in
-               Option.value post_resolution ~default:resolution, errors
+               resolution_or_default post_resolution ~default:resolution, errors
              in
              resolution, List.append new_errors errors)
     in
@@ -2465,7 +2458,7 @@ module State (Context : Context) = struct
         let resolution_right, resolved_right, errors =
           let resolution, errors_left =
             let post_resolution, errors = forward_statement ~resolution ~statement:assume in
-            Option.value post_resolution ~default:resolution, errors
+            resolution_or_default post_resolution ~default:resolution, errors
           in
           let { Resolved.resolution; resolved; errors = errors_right; _ } =
             forward_expression ~resolution ~expression:right
@@ -2747,7 +2740,7 @@ module State (Context : Context) = struct
             let post_resolution, errors =
               forward_statement ~resolution ~statement:(Statement.assume expression)
             in
-            Option.value post_resolution ~default:resolution, errors
+            resolution_or_default post_resolution ~default:resolution, errors
           in
           let { Resolved.resolution; resolved; errors = callee_errors; base = resolved_base; _ } =
             forward_expression ~resolution ~expression:callee
@@ -2788,7 +2781,7 @@ module State (Context : Context) = struct
             let post_resolution, errors =
               forward_statement ~resolution ~statement:(Statement.assume (negate expression))
             in
-            Option.value post_resolution ~default:resolution, errors
+            resolution_or_default post_resolution ~default:resolution, errors
           in
           let { Resolved.resolution; resolved; errors = callee_errors; base = resolved_base; _ } =
             forward_expression ~resolution ~expression:callee
@@ -3695,7 +3688,7 @@ module State (Context : Context) = struct
         let target_resolved, target_errors =
           forward_statement ~resolution ~statement:(Statement.assume test)
           |> fun (post_resolution, test_errors) ->
-          let resolution = Option.value post_resolution ~default:resolution in
+          let resolution = resolution_or_default post_resolution ~default:resolution in
           let { Resolved.resolved; errors; _ } =
             forward_expression ~resolution ~expression:target
           in
@@ -3704,7 +3697,7 @@ module State (Context : Context) = struct
         let alternative_resolved, alternative_errors =
           forward_statement ~resolution ~statement:(Statement.assume (negate test))
           |> fun (post_resolution, test_errors) ->
-          let resolution = Option.value post_resolution ~default:resolution in
+          let resolution = resolution_or_default post_resolution ~default:resolution in
           let { Resolved.resolved; errors; _ } =
             forward_expression ~resolution ~expression:alternative
           in
@@ -3814,14 +3807,11 @@ module State (Context : Context) = struct
             { resolved with resolved = Type.bool; resolved_annotation = None; base = None })
     | WalrusOperator { value; target } ->
         let statement =
-          {
-            Node.value = Statement.Assign { value; target; annotation = None; parent = None };
-            location;
-          }
+          { Node.value = Statement.Assign { value; target; annotation = None }; location }
         in
         let resolution, errors =
           let post_resolution, errors = forward_statement ~resolution ~statement in
-          Option.value post_resolution ~default:resolution, errors
+          resolution_or_default post_resolution ~default:resolution, errors
         in
         let resolved = forward_expression ~resolution ~expression:value in
         { resolved with errors = List.append errors resolved.errors }
@@ -3872,13 +3862,8 @@ module State (Context : Context) = struct
       value =
         {
           Define.signature =
-            {
-              async;
-              parent = define_parent;
-              return_annotation = return_annotation_expression;
-              generator;
-              _;
-            } as signature;
+            { async; parent; return_annotation = return_annotation_expression; generator; _ } as
+            signature;
           body;
           _;
         } as define;
@@ -4006,7 +3991,7 @@ module State (Context : Context) = struct
           emit_typed_dictionary_errors ~errors typed_dictionary_errors
     in
     match value with
-    | Assign { Assign.target; annotation; value; parent } -> (
+    | Assign { Assign.target; annotation; value } -> (
         let errors, is_final, original_annotation =
           match annotation with
           | None -> [], false, None
@@ -4090,7 +4075,7 @@ module State (Context : Context) = struct
               else
                 errors
             in
-            ( Some resolution,
+            ( Value resolution,
               add_annotation_errors errors |> add_type_variable_errors |> add_prohibitive_any_errors
             )
         | _ ->
@@ -4639,7 +4624,7 @@ module State (Context : Context) = struct
                       let is_illegal_attribute_annotation attribute =
                         let attribute_parent = AnnotatedAttribute.parent attribute in
                         let parent_annotation =
-                          match define_parent with
+                          match parent with
                           | None -> Type.Top
                           | Some reference -> Type.Primitive (Reference.show reference)
                         in
@@ -5099,7 +5084,7 @@ module State (Context : Context) = struct
                 ~resolved_value
                 ~expression:(Some value)
             in
-            Some resolution, errors)
+            Value resolution, errors)
     | Assert { Assert.test; origin; _ } ->
         let resolution, errors =
           let resolution, errors =
@@ -5223,7 +5208,7 @@ module State (Context : Context) = struct
           match Node.value test with
           | Constant Constant.False ->
               (* Explicit bottom. *)
-              None, errors
+              Unreachable, errors
           | ComparisonOperator
               {
                 left =
@@ -5238,6 +5223,22 @@ module State (Context : Context) = struct
                     _;
                   };
                 operator = ComparisonOperator.Is;
+                right = annotation;
+              }
+          | ComparisonOperator
+              {
+                left =
+                  {
+                    Node.value =
+                      Call
+                        {
+                          callee = { Node.value = Name (Name.Identifier "type"); _ };
+                          arguments =
+                            [{ Call.Argument.name = None; value = { Node.value = Name name; _ } }];
+                        };
+                    _;
+                  };
+                operator = ComparisonOperator.Equals;
                 right = annotation;
               }
           | Call
@@ -5263,21 +5264,21 @@ module State (Context : Context) = struct
                 match existing_annotation name with
                 (* Allow Anys [especially from placeholder stubs] to clobber *)
                 | Some _ when Type.is_any annotation ->
-                    Some (Annotation.create annotation |> set_local ~name)
+                    Value (Annotation.create annotation |> set_local ~name)
                 | Some existing_annotation when refinement_unnecessary existing_annotation ->
-                    Some (set_local ~name existing_annotation)
+                    Value (set_local ~name existing_annotation)
                 (* Clarify Anys if possible *)
                 | Some existing_annotation
                   when Type.equal (Annotation.annotation existing_annotation) Type.Any ->
-                    Some (Annotation.create annotation |> set_local ~name)
-                | None -> Some resolution
+                    Value (Annotation.create annotation |> set_local ~name)
+                | None -> Value resolution
                 | Some existing_annotation ->
                     let existing_type = Annotation.annotation existing_annotation in
                     let { consistent_with_boundary; _ } =
                       partition existing_type ~boundary:annotation
                     in
                     if not (Type.is_unbound consistent_with_boundary) then
-                      Some (Annotation.create consistent_with_boundary |> set_local ~name)
+                      Value (Annotation.create consistent_with_boundary |> set_local ~name)
                     else if
                       GlobalResolution.less_or_equal
                         global_resolution
@@ -5288,9 +5289,9 @@ module State (Context : Context) = struct
                            ~left:annotation
                            ~right:existing_type
                     then
-                      Some (Annotation.create annotation |> set_local ~name)
+                      Value (Annotation.create annotation |> set_local ~name)
                     else
-                      None
+                      Unreachable
               in
               resolution, errors
           | ComparisonOperator
@@ -5306,6 +5307,21 @@ module State (Context : Context) = struct
                     _;
                   };
                 operator = ComparisonOperator.IsNot;
+                right = annotation_expression;
+              }
+          | ComparisonOperator
+              {
+                left =
+                  {
+                    Node.value =
+                      Call
+                        {
+                          callee = { Node.value = Name (Name.Identifier "type"); _ };
+                          arguments = [{ Call.Argument.name = None; value }];
+                        };
+                    _;
+                  };
+                operator = ComparisonOperator.NotEquals;
                 right = annotation_expression;
               }
           | UnaryOperator
@@ -5350,10 +5366,10 @@ module State (Context : Context) = struct
                 | _ -> resolution
               in
               match contradiction, value with
-              | true, _ -> None, errors
+              | true, _ -> Unreachable, errors
               | _, { Node.value = Name name; _ } when is_simple_name name ->
-                  Some (resolve ~name), errors
-              | _ -> Some resolution, errors)
+                  Value (resolve ~name), errors
+              | _ -> Value resolution, errors)
           | Call
               {
                 callee = { Node.value = Name (Name.Identifier "callable"); _ };
@@ -5378,7 +5394,7 @@ module State (Context : Context) = struct
                       Annotation.create consistent_with_boundary |> set_local ~name
                 | _ -> resolution
               in
-              Some resolution, errors
+              Value resolution, errors
           | UnaryOperator
               {
                 UnaryOperator.operator = UnaryOperator.Not;
@@ -5413,7 +5429,7 @@ module State (Context : Context) = struct
                     |> Option.value ~default:resolution
                 | _ -> resolution
               in
-              Some resolution, errors
+              Value resolution, errors
           | Call
               {
                 callee = { Node.value = Name (Name.Identifier "all"); _ };
@@ -5438,10 +5454,10 @@ module State (Context : Context) = struct
                          (Type.parametric parametric_name [Single (Type.union parameters)]))
                 | _ -> resolution
               in
-              Some resolution, errors
+              Value resolution, errors
           | Name name when is_simple_name name -> (
               match existing_annotation name with
-              | Some { Annotation.annotation = Type.NoneType; _ } -> None, errors
+              | Some { Annotation.annotation = Type.NoneType; _ } -> Unreachable, errors
               | Some ({ Annotation.annotation = Type.Union parameters; _ } as annotation) ->
                   let refined_annotation =
                     List.filter parameters ~f:(fun parameter -> not (Type.is_none parameter))
@@ -5451,22 +5467,26 @@ module State (Context : Context) = struct
                       ~name
                       { annotation with Annotation.annotation = Type.union refined_annotation }
                   in
-                  Some resolution, errors
-              | _ -> Some resolution, errors)
+                  Value resolution, errors
+              | _ -> Value resolution, errors)
           | BooleanOperator { BooleanOperator.left; operator; right } -> (
               let update resolution expression =
                 forward_statement ~resolution ~statement:(Statement.assume expression)
-                |> fun (post_resolution, _) -> Option.value post_resolution ~default:resolution
+                |> function
+                | Value post_resolution, _ -> post_resolution
+                | Unreachable, _ -> resolution
               in
               match operator with
               | BooleanOperator.And ->
-                  let left_resolution =
+                  let left_state =
                     forward_statement ~resolution ~statement:(Statement.assume left) |> fst
                   in
-                  let right_resolution =
-                    left_resolution
-                    >>= fun resolution ->
-                    forward_statement ~resolution ~statement:(Statement.assume right) |> fst
+                  let right_state =
+                    left_state
+                    |> function
+                    | Unreachable -> Unreachable
+                    | Value resolution ->
+                        forward_statement ~resolution ~statement:(Statement.assume right) |> fst
                   in
                   let merge_resolutions left_resolution right_resolution =
                     let {
@@ -5496,17 +5516,21 @@ module State (Context : Context) = struct
                     let annotation_store = { Resolution.annotations; temporary_annotations } in
                     Resolution.with_annotation_store left_resolution ~annotation_store
                   in
-                  let resolution =
-                    Option.map2 ~f:merge_resolutions left_resolution right_resolution
+                  let state =
+                    match left_state, right_state with
+                    | Unreachable, _ -> Unreachable
+                    | _, Unreachable -> Unreachable
+                    | Value left_resolution, Value right_resolution ->
+                        Value (merge_resolutions left_resolution right_resolution)
                   in
-                  resolution, errors
+                  state, errors
               | BooleanOperator.Or ->
                   let left_resolution = update resolution left in
                   let right_resolution =
                     update resolution (normalize (negate left))
                     |> fun resolution -> update resolution right
                   in
-                  Some (join_resolutions left_resolution right_resolution), errors)
+                  Value (join_resolutions left_resolution right_resolution), errors)
           | ComparisonOperator
               {
                 ComparisonOperator.left;
@@ -5533,14 +5557,14 @@ module State (Context : Context) = struct
                       (RefinementUnit.create ~base:refined ())
                       (RefinementUnit.create ~base:previous ())
                   then
-                    Some (set_local ~name refined), errors
+                    Value (set_local ~name refined), errors
                   else
                     (* Keeping previous state, since it is more refined. *)
                     (* TODO: once T38750424 is done, we should really return bottom if previous is
                        not <= refined and refined is not <= previous, as this is an obvious
                        contradiction. *)
-                    Some resolution, errors
-              | None -> Some resolution, errors)
+                    Value resolution, errors
+              | None -> Value resolution, errors)
           | ComparisonOperator
               {
                 ComparisonOperator.left = { Node.value = Name name; _ };
@@ -5576,14 +5600,14 @@ module State (Context : Context) = struct
                           (RefinementUnit.create ~base:refined ())
                           (RefinementUnit.create ~base:previous ())
                       then
-                        Some (set_local ~name refined), errors
+                        Value (set_local ~name refined), errors
                       else (* Keeping previous state, since it is more refined. *)
-                        Some resolution, errors
+                        Value resolution, errors
                   | None when not (Resolution.is_global resolution ~reference) ->
                       let resolution = set_local ~name (Annotation.create element_type) in
-                      Some resolution, errors
-                  | _ -> Some resolution, errors)
-              | _ -> Some resolution, errors)
+                      Value resolution, errors
+                  | _ -> Value resolution, errors)
+              | _ -> Value resolution, errors)
           | ComparisonOperator
               {
                 ComparisonOperator.left = { Node.value = Constant Constant.NoneLiteral; _ };
@@ -5611,9 +5635,9 @@ module State (Context : Context) = struct
                           ~name
                           { annotation with Annotation.annotation = Type.list parameter }
                       in
-                      Some resolution, errors
-                  | _ -> Some resolution, errors)
-              | _ -> Some resolution, errors)
+                      Value resolution, errors
+                  | _ -> Value resolution, errors)
+              | _ -> Value resolution, errors)
           | WalrusOperator { target; _ } ->
               let resolution, _ =
                 forward_statement ~resolution ~statement:(Statement.assume target)
@@ -5632,9 +5656,9 @@ module State (Context : Context) = struct
               match Type.typeguard_annotation callee_type with
               | Some guard_type ->
                   let resolution = set_local ~name (Annotation.create guard_type) in
-                  Some resolution, errors
-              | None -> Some resolution, errors)
-          | _ -> Some resolution, errors
+                  Value resolution, errors
+              | None -> Value resolution, errors)
+          | _ -> Value resolution, errors
         in
         (* Ignore type errors from the [assert (not foo)] in the else-branch because it's the same
            [foo] as in the true-branch. This duplication of errors is normally ok because the errors
@@ -5657,7 +5681,7 @@ module State (Context : Context) = struct
               Resolution.unset_local resolution ~reference:(Reference.create identifier)
           | _ -> resolution
         in
-        Some resolution, errors
+        Value resolution, errors
     | Expression
         { Node.value = Call { callee; arguments = { Call.Argument.value = test; _ } :: _ }; _ }
       when Core.Set.mem Recognized.assert_functions (Expression.show callee) ->
@@ -5687,7 +5711,7 @@ module State (Context : Context) = struct
                     base = None;
                   }
             in
-            ( Some resolution,
+            ( Value resolution,
               validate_return ~expression:None ~resolution ~errors ~actual ~is_implicit:false )
         | { Node.value = Expression.YieldFrom yielded_from; location } ->
             let call =
@@ -5711,16 +5735,16 @@ module State (Context : Context) = struct
               | Some [parameter] -> Type.generator parameter
               | _ -> Type.generator Type.Any
             in
-            ( Some resolution,
+            ( Value resolution,
               validate_return ~expression:None ~resolution ~errors ~actual ~is_implicit:false )
         | expression ->
             let { Resolved.resolution; resolved; errors; _ } =
               forward_expression ~resolution ~expression
             in
             if Type.is_noreturn resolved then
-              None, errors
+              Unreachable, errors
             else
-              Some resolution, errors)
+              Value resolution, errors)
     | Raise { Raise.expression = Some expression; _ } ->
         let { Resolved.resolution; resolved; errors; _ } =
           forward_expression ~resolution ~expression
@@ -5741,8 +5765,8 @@ module State (Context : Context) = struct
               ~location
               ~kind:(Error.InvalidException { expression; annotation = resolved })
         in
-        Some resolution, errors
-    | Raise _ -> Some resolution, []
+        Value resolution, errors
+    | Raise _ -> Value resolution, []
     | Return { Return.expression; is_implicit } ->
         let { Resolved.resolution; resolved = actual; errors; _ } =
           Option.value_map
@@ -5757,9 +5781,8 @@ module State (Context : Context) = struct
               }
             ~f:(fun expression -> forward_expression ~resolution ~expression)
         in
-        Some resolution, validate_return ~expression ~resolution ~errors ~actual ~is_implicit
-    | Define { signature = { Define.Signature.name = { Node.value = name; _ }; _ } as signature; _ }
-      ->
+        Value resolution, validate_return ~expression ~resolution ~errors ~actual ~is_implicit
+    | Define { signature = { Define.Signature.name; _ } as signature; _ } ->
         let resolution =
           if Reference.is_local name then
             type_of_signature ~resolution signature
@@ -5770,7 +5793,7 @@ module State (Context : Context) = struct
           else
             resolution
         in
-        Some resolution, []
+        Value resolution, []
     | Import { Import.from; imports } ->
         let undefined_imports =
           match from with
@@ -5824,7 +5847,7 @@ module State (Context : Context) = struct
                                 in
                                 Some (Error.UndefinedName { from = origin_module; name }))))
         in
-        ( Some resolution,
+        ( Value resolution,
           List.fold undefined_imports ~init:[] ~f:(fun errors undefined_import ->
               emit_error ~errors ~location ~kind:(Error.UndefinedImport undefined_import)) )
     | Class class_statement ->
@@ -5890,20 +5913,20 @@ module State (Context : Context) = struct
               |> Option.value ~default:errors
           | _ -> errors
         in
-        Some resolution, List.fold (Class.base_classes class_statement) ~f:check_base ~init:[]
+        Value resolution, List.fold (Class.base_classes class_statement) ~f:check_base ~init:[]
     | For _
     | If _
     | Try _
     | With _
     | While _ ->
         (* Check happens implicitly in the resulting control flow. *)
-        Some resolution, []
+        Value resolution, []
     | Break
     | Continue
     | Global _
     | Nonlocal _
     | Pass ->
-        Some resolution, []
+        Value resolution, []
 
 
   and resolve_expression ~resolution expression =
@@ -5972,24 +5995,28 @@ module State (Context : Context) = struct
           ~kind:(Error.InvalidType (InvalidType { annotation; expected = "an Enum member" })))
 
 
-  let forward ~key ({ resolution; _ } as state) ~statement =
-    match resolution with
-    | None -> state
-    | Some resolution ->
+  let forward ~statement_key state ~statement =
+    match state with
+    | Unreachable -> state
+    | Value resolution ->
         let post_resolution, errors = forward_statement ~resolution ~statement in
         let () =
-          LocalErrorMap.set state.error_map ~key ~errors;
+          let (_ : unit option) = Context.error_map >>| LocalErrorMap.set ~statement_key ~errors in
           match post_resolution with
-          | None -> ()
-          | Some post_resolution ->
+          | Unreachable -> ()
+          | Value post_resolution ->
               let precondition = Resolution.annotation_store resolution in
               let postcondition = Resolution.annotation_store post_resolution in
-              LocalAnnotationMap.set state.resolution_fixpoint ~key ~precondition ~postcondition
+              let (_ : unit option) =
+                Context.resolution_fixpoint
+                >>| LocalAnnotationMap.set ~statement_key ~precondition ~postcondition
+              in
+              ()
         in
-        { state with resolution = post_resolution }
+        post_resolution
 
 
-  let backward ~key:_ state ~statement:_ = state
+  let backward ~statement_key:_ state ~statement:_ = state
 end
 
 module CheckResult = struct
@@ -6013,6 +6040,10 @@ module DummyContext = struct
     |> Node.create_with_default_location
 
 
+  let resolution_fixpoint = None
+
+  let error_map = None
+
   module Builder = Callgraph.NullBuilder
 end
 
@@ -6031,18 +6062,18 @@ let resolution
     State.forward_statement ~resolution ~statement
     |> fun (resolution, errors) ->
     match resolution with
-    | None -> Resolution.Unreachable
-    | Some resolution -> Resolution.Reachable { resolution; errors }
+    | Unreachable -> Resolution.Unreachable
+    | Value resolution -> Resolution.Reachable { resolution; errors }
   in
   Resolution.create ~global_resolution ~annotation_store ~resolve_expression ~resolve_statement ()
 
 
-let resolution_with_key ~global_resolution ~local_annotations ~parent ~key context =
+let resolution_with_key ~global_resolution ~local_annotations ~parent ~statement_key context =
   let annotation_store =
     Option.value_map
       local_annotations
       ~f:(fun map ->
-        LocalAnnotationMap.ReadOnly.get_precondition map key
+        LocalAnnotationMap.ReadOnly.get_precondition map ~statement_key
         |> Option.value ~default:Resolution.empty_annotation_store)
       ~default:Resolution.empty_annotation_store
   in
@@ -6050,11 +6081,8 @@ let resolution_with_key ~global_resolution ~local_annotations ~parent ~key conte
 
 
 let emit_errors_on_exit (module Context : Context) ~errors_sofar ~resolution () =
-  let ({
-         Node.value =
-           { Define.signature = { name = { Node.value = name; _ }; _ } as signature; _ } as define;
-         location;
-       } as define_node)
+  let ({ Node.value = { Define.signature = { name; _ } as signature; _ } as define; location } as
+      define_node)
     =
     Context.define
   in
@@ -6698,21 +6726,17 @@ let exit_state ~resolution (module Context : Context) =
   let module State = State (Context) in
   let module Fixpoint = Fixpoint.Make (State) in
   let initial = State.initial ~resolution in
-  let {
-    Node.value =
-      { Define.signature = { Define.Signature.name = { Node.value = name; _ }; _ }; _ } as define;
-    _;
-  }
-    =
+  let { Node.value = { Define.signature = { Define.Signature.name; _ }; _ } as define; _ } =
     Context.define
   in
   let global_resolution = Resolution.global_resolution resolution in
   if Define.is_stub define then
-    let resolution =
-      let { State.resolution; _ } = initial in
-      Option.value_exn resolution
+    let resolution = Option.value_exn (State.resolution initial) in
+    let errors_sofar =
+      Option.value_exn
+        ~message:"analysis context has no error map"
+        (Context.error_map >>| LocalErrorMap.all_errors >>| Error.deduplicate)
     in
-    let errors_sofar = State.all_errors initial |> Error.deduplicate in
     ( emit_errors_on_exit (module Context) ~errors_sofar ~resolution ()
       |> filter_errors (module Context) ~global_resolution,
       None,
@@ -6736,7 +6760,7 @@ let exit_state ~resolution (module Context : Context) =
     (if Define.dump_cfg define then
        let precondition table id =
          match Hashtbl.find table id with
-         | Some { State.resolution = Some exit_resolution; _ } ->
+         | Some (State.Value exit_resolution) ->
              let stringify ~temporary ~key ~data label =
                let annotation_string =
                  Type.show (Annotation.annotation data) |> String.strip ~drop:(Char.equal '`')
@@ -6767,17 +6791,25 @@ let exit_state ~resolution (module Context : Context) =
          (Cfg.to_dot ~precondition:(precondition fixpoint) ~single_line:true cfg));
 
     let callees = Context.Builder.get_all_callees () in
-    let errors, local_annotations =
-      match exit with
-      | None -> [], None
-      | Some ({ State.resolution_fixpoint; resolution = post_resolution; _ } as state) ->
-          let errors_sofar = State.all_errors state |> Error.deduplicate in
-          let resolution = Option.value post_resolution ~default:resolution in
-          ( emit_errors_on_exit (module Context) ~errors_sofar ~resolution ()
-            |> filter_errors (module Context) ~global_resolution,
-            Some resolution_fixpoint )
+    let local_annotations =
+      Option.value_exn
+        ~message:"analysis context has no resolution fixpoint"
+        Context.resolution_fixpoint
     in
-    errors, local_annotations, Some callees)
+    let errors =
+      Option.value_exn
+        ~message:"analysis context has no error map"
+        (Context.error_map >>| LocalErrorMap.all_errors >>| Error.deduplicate)
+    in
+    let errors =
+      match exit with
+      | None -> errors
+      | Some post_state ->
+          let resolution = State.resolution_or_default post_state ~default:resolution in
+          emit_errors_on_exit (module Context) ~errors_sofar:errors ~resolution ()
+          |> filter_errors (module Context) ~global_resolution
+    in
+    errors, Some local_annotations, Some callees)
 
 
 let check_define
@@ -6785,10 +6817,7 @@ let check_define
     ~resolution
     ~qualifier
     ~call_graph_builder:(module Builder : Callgraph.Builder)
-    ({
-       Node.location;
-       value = { Define.signature = { name = { Node.value = name; _ }; _ }; _ } as define;
-     } as define_node)
+    ({ Node.location; value = { Define.signature = { name; _ }; _ } as define } as define_node)
   =
   try
     let errors, local_annotations, callees =
@@ -6798,6 +6827,10 @@ let check_define
         let debug = debug
 
         let define = define_node
+
+        let resolution_fixpoint = Some (LocalAnnotationMap.empty ())
+
+        let error_map = Some (LocalErrorMap.empty ())
 
         module Builder = Builder
       end
@@ -6851,6 +6884,10 @@ let get_or_recompute_local_annotations ~environment name =
               let debug = false
 
               let define = define_node
+
+              let resolution_fixpoint = Some (LocalAnnotationMap.empty ())
+
+              let error_map = Some (LocalErrorMap.empty ())
 
               module Builder = Callgraph.NullBuilder
             end

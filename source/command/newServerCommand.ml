@@ -6,13 +6,13 @@
  *)
 
 open Core
-open Newserver
+open Server
 module Path = PyrePath
 
 module ServerConfiguration = struct
   type t = {
     base: NewCommandStartup.BaseConfiguration.t;
-    socket_path: Path.t option;
+    socket_path: Path.t;
     strict: bool;
     show_error_traces: bool;
     additional_logging_sections: string list;
@@ -36,7 +36,7 @@ module ServerConfiguration = struct
             list_member ~f:to_critical_file
           in
 
-          let socket_path = json |> optional_path_member "socket_path" in
+          let socket_path = json |> path_member "socket_path" in
           let watchman_root = json |> optional_path_member "watchman_root" in
           let taint_model_paths = json |> path_list_member "taint_model_paths" ~default:[] in
           let strict = json |> bool_member "strict" ~default:false in
@@ -193,6 +193,11 @@ let run_server configuration_file =
       (* Show start up notification. *)
       StartupNotification.consume ~log_path ()
       |> Option.iter ~f:(fun message -> Log.warning "%s" message);
+
+      (* Ignore SIGPIPE since >99% of the time they are non-fatal but the default Unix behavior is
+         for it to terminate the server, which is not ideal. Besides, individual callsites can
+         mostly detect the same class of issue by handling the EPIPE unix errno. *)
+      Signal.Expert.(set Signal.pipe `Ignore);
 
       let exit_status =
         let start_options = ServerConfiguration.start_options_of server_configuration in

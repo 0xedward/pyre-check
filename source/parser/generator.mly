@@ -462,7 +462,6 @@ small_statement:
           Assign.target = convert target;
           annotation = None;
           value = convert value;
-          parent = None;
         };
       }]
     }
@@ -477,7 +476,6 @@ small_statement:
           Assign.target = convert target;
           annotation = Some annotation >>| convert;
           value = create_ellipsis_after annotation |> convert;
-          parent = None;
         };
       }]
     }
@@ -492,7 +490,6 @@ small_statement:
           Assign.target = convert target;
           annotation = Some annotation >>| convert;
           value = create_ellipsis_after annotation |> convert;
-          parent = None;
         };
       }]
     }
@@ -509,7 +506,6 @@ small_statement:
           Assign.target = convert target;
           annotation = Some annotation >>| convert;
           value = convert value;
-          parent = None;
         };
       }]
     }
@@ -526,7 +522,6 @@ small_statement:
           Assign.target = convert target;
           annotation = Some annotation >>| convert;
           value = convert value;
-          parent = None;
         };
       }]
     }
@@ -551,7 +546,6 @@ small_statement:
           Assign.target = convert target;
           annotation = Some annotation >>| convert;
           value = convert ellipsis;
-          parent = None;
         };
       }]
     }
@@ -680,19 +674,14 @@ compound_statement:
       let location = Location.create ~start:definition ~stop:colon_position in
       let body_location, body = body in
       let location = { location with Location.stop = body_location.Location.stop } in
-      let name_location, name = name in
+      let _, name = name in
       let body =
         let rec transform_toplevel_statements = function
-          | { Node.location; value = Statement.Assign assign } ->
-              {
-                Node.location;
-                value = Statement.Assign { assign with Assign.parent = Some name };
-              }
-          | { Node.location; value = Define define } ->
+          | { Node.location; value = Statement.Define define } ->
               let signature = { define.signature with Define.Signature.parent = Some name } in
               {
                 Node.location;
-                value = Define { define with signature };
+                value = Statement.Define { define with signature };
               }
           | {
               Node.location;
@@ -717,7 +706,7 @@ compound_statement:
       {
         Node.location;
         value = Class {
-          Class.name = { Node.location = name_location; value = name };
+          Class.name = name;
           base_arguments = List.map ~f:convert_argument bases;
           body;
           decorators = [];
@@ -800,12 +789,12 @@ compound_statement:
         | _ ->
             parameters
       in
-      let name_location, name = name in
+      let _, name = name in
       {
         Node.location;
         value = Define {
           signature = {
-            name = { Node.location = name_location; value = name };
+            name = name;
             parameters = List.map ~f:convert_parameter parameters;
             decorators = [];
             return_annotation = annotation >>| convert;
@@ -1286,7 +1275,6 @@ import:
             Assign.target = convert target;
             annotation = annotation >>| convert;
             value = convert value;
-            parent = None;
           };
         }
       in

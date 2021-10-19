@@ -113,7 +113,6 @@ let test_assign_locations _ =
              Assign.target = node ~start:(1, 0) ~stop:(1, 1) (Expression.Name (Name.Identifier "a"));
              annotation = None;
              value = node ~start:(1, 4) ~stop:(1, 5) (Expression.Constant (Constant.Integer 1));
-             parent = None;
            });
     ];
   assert_source_locations
@@ -128,7 +127,6 @@ let test_assign_locations _ =
              annotation =
                Some (node ~start:(1, 3) ~stop:(1, 6) (Expression.Name (Name.Identifier "int")));
              value = node ~start:(1, 9) ~stop:(1, 10) (Expression.Constant (Constant.Integer 1));
-             parent = None;
            });
     ];
   assert_source_locations
@@ -147,7 +145,6 @@ let test_assign_locations _ =
                     ~stop:(1, 22)
                     (Expression.Constant (Constant.String (StringLiteral.create "int"))));
              value = node ~start:(1, 4) ~stop:(1, 5) (Expression.Constant (Constant.Integer 1));
-             parent = None;
            });
     ];
   assert_source_locations
@@ -166,7 +163,6 @@ let test_assign_locations _ =
                     ~stop:(1, 20)
                     (Expression.Constant (Constant.String (StringLiteral.create "int"))));
              value = node ~start:(1, 4) ~stop:(1, 5) (Expression.Constant (Constant.Integer 1));
-             parent = None;
            });
     ];
   assert_source_locations
@@ -181,7 +177,6 @@ let test_assign_locations _ =
              annotation =
                Some (node ~start:(1, 3) ~stop:(1, 6) (Expression.Name (Name.Identifier "int")));
              value = node ~start:(1, 6) ~stop:(1, 6) (Expression.Constant Constant.Ellipsis);
-             parent = None;
            });
     ];
   assert_source_locations
@@ -195,7 +190,6 @@ let test_assign_locations _ =
              Assign.target = node ~start:(1, 0) ~stop:(1, 1) (Expression.Name (Name.Identifier "a"));
              annotation = None;
              value = node ~start:(1, 8) ~stop:(1, 9) (Expression.Constant (Constant.Integer 1));
-             parent = None;
            });
       node
         ~start:(1, 4)
@@ -205,7 +199,6 @@ let test_assign_locations _ =
              Assign.target = node ~start:(1, 4) ~stop:(1, 5) (Expression.Name (Name.Identifier "b"));
              annotation = None;
              value = node ~start:(1, 8) ~stop:(1, 9) (Expression.Constant (Constant.Integer 1));
-             parent = None;
            });
     ];
   assert_source_locations
@@ -224,7 +217,6 @@ let test_assign_locations _ =
                  ~stop:(1, 16)
                  (Expression.YieldFrom
                     (node ~start:(1, 15) ~stop:(1, 16) (Expression.Name (Name.Identifier "b"))));
-             parent = None;
            });
     ];
   assert_source_locations
@@ -270,7 +262,6 @@ let test_assign_locations _ =
                           };
                         ];
                     });
-             parent = None;
            });
     ]
 
@@ -706,7 +697,6 @@ let test_call_locations _ =
              target = node ~start:(1, 0) ~stop:(1, 1) (Expression.Name (Name.Identifier "x"));
              annotation = None;
              value = node ~start:(1, 11) ~stop:(1, 12) (Expression.Name (Name.Identifier "y"));
-             parent = None;
            });
       node
         ~start:(1, 4)
@@ -980,7 +970,7 @@ let test_class_locations _ =
         ~stop:(3, 5)
         (Statement.Class
            {
-             Class.name = node ~start:(2, 6) ~stop:(2, 9) !&"foo";
+             Class.name = !&"foo";
              base_arguments = [];
              body = [node ~start:(3, 1) ~stop:(3, 5) Statement.Pass];
              decorators = [{ name = node ~start:(1, 1) ~stop:(1, 4) !&"bar"; arguments = None }];
@@ -995,7 +985,7 @@ let test_class_locations _ =
         ~stop:(2, 16)
         (Statement.Class
            {
-             Class.name = node ~start:(1, 6) ~stop:(1, 9) !&"foo";
+             Class.name = !&"foo";
              base_arguments = [];
              body =
                [
@@ -1006,7 +996,7 @@ let test_class_locations _ =
                       {
                         signature =
                           {
-                            name = node ~start:(2, 5) ~stop:(2, 8) !&"bar";
+                            name = !&"bar";
                             parameters = [];
                             decorators = [];
                             return_annotation = None;
@@ -1032,7 +1022,7 @@ let test_class_locations _ =
         ~stop:(2, 2)
         (Statement.Class
            {
-             Class.name = node ~start:(1, 6) ~stop:(1, 9) !&"foo";
+             Class.name = !&"foo";
              base_arguments =
                [
                  {
@@ -1072,7 +1062,7 @@ let test_class_locations _ =
         ~stop:(5, 10)
         (Statement.Class
            {
-             Class.name = node ~start:(2, 6) ~stop:(2, 9) !&"foo";
+             Class.name = !&"foo";
              base_arguments = [];
              body =
                [
@@ -1092,7 +1082,7 @@ let test_class_locations _ =
                                  {
                                    signature =
                                      {
-                                       name = node ~start:(4, 8) ~stop:(4, 11) !&"bar";
+                                       name = !&"bar";
                                        parameters = [];
                                        decorators = [];
                                        return_annotation = None;
@@ -1126,7 +1116,7 @@ let test_define_locations _ =
            {
              signature =
                {
-                 name = node ~start:(1, 10) ~stop:(1, 13) !&"foo";
+                 name = !&"foo";
                  parameters = [];
                  decorators = [];
                  return_annotation = None;
@@ -1163,7 +1153,7 @@ let test_define_locations _ =
            {
              signature =
                {
-                 name = node ~start:(2, 4) ~stop:(2, 7) !&"foo";
+                 name = !&"foo";
                  parameters = [];
                  decorators = [];
                  return_annotation = None;
@@ -1183,7 +1173,7 @@ let test_define_locations _ =
                       {
                         signature =
                           {
-                            name = node ~start:(3, 6) ~stop:(3, 9) !&"bar";
+                            name = !&"bar";
                             parameters = [];
                             decorators = [];
                             return_annotation = None;
@@ -1238,7 +1228,7 @@ let test_define_locations _ =
            {
              signature =
                {
-                 name = node ~start:(2, 4) ~stop:(2, 7) !&"foo";
+                 name = !&"foo";
                  parameters =
                    [
                      node
@@ -1284,7 +1274,7 @@ let test_define_locations _ =
            {
              signature =
                {
-                 name = node ~start:(2, 4) ~stop:(2, 7) !&"foo";
+                 name = !&"foo";
                  parameters =
                    [
                      node
@@ -2790,7 +2780,6 @@ let test_stub_locations _ =
              Assign.target = node ~start:(1, 0) ~stop:(1, 1) (Expression.Name (Name.Identifier "a"));
              annotation = None;
              value = node ~start:(1, 4) ~stop:(1, 7) (Expression.Constant Constant.Ellipsis);
-             parent = None;
            });
     ];
   assert_source_locations
@@ -2809,7 +2798,6 @@ let test_stub_locations _ =
                     ~stop:(1, 26)
                     (Expression.Constant (Constant.String (StringLiteral.create "Tuple[str]"))));
              value = node ~start:(1, 4) ~stop:(1, 7) (Expression.Constant Constant.Ellipsis);
-             parent = None;
            });
     ];
   assert_source_locations
@@ -2822,7 +2810,7 @@ let test_stub_locations _ =
            {
              signature =
                {
-                 name = node ~start:(1, 4) ~stop:(1, 7) !&"foo";
+                 name = !&"foo";
                  parameters =
                    [
                      node
@@ -2859,7 +2847,7 @@ let test_stub_locations _ =
            {
              signature =
                {
-                 name = node ~start:(2, 4) ~stop:(2, 7) !&"foo";
+                 name = !&"foo";
                  parameters =
                    [
                      node
@@ -2909,7 +2897,7 @@ let test_stub_locations _ =
         ~stop:(2, 8)
         (Statement.Class
            {
-             Class.name = node ~start:(1, 6) ~stop:(1, 7) !&"A";
+             Class.name = !&"A";
              base_arguments = [];
              body =
                [
@@ -2928,7 +2916,6 @@ let test_stub_locations _ =
                                (Expression.Constant (Constant.String (StringLiteral.create "int"))));
                         value =
                           node ~start:(2, 5) ~stop:(2, 8) (Expression.Constant Constant.Ellipsis);
-                        parent = Some !&"A";
                       });
                ];
              decorators = [];
@@ -2943,7 +2930,7 @@ let test_stub_locations _ =
         ~stop:(1, 16)
         (Statement.Class
            {
-             Class.name = node ~start:(1, 6) ~stop:(1, 9) !&"foo";
+             Class.name = !&"foo";
              base_arguments = [];
              body =
                [
@@ -3201,7 +3188,6 @@ let test_tuple_locations _ =
                     ]);
              annotation = None;
              value = node ~start:(2, 9) ~stop:(2, 10) (Expression.Name (Name.Identifier "a"));
-             parent = None;
            });
     ];
   assert_source_locations

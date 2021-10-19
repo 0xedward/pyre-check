@@ -35,7 +35,7 @@ module Request = struct
         function_reference: Reference.t;
         decorators_to_skip: Reference.t list;
       }
-  [@@deriving sexp, compare, eq, show]
+  [@@deriving sexp, compare]
 
   let inline_decorators ?(decorators_to_skip = []) function_reference =
     InlineDecorators { function_reference; decorators_to_skip }
@@ -46,7 +46,7 @@ module Response = struct
     type attribute_kind =
       | Regular
       | Property
-    [@@deriving sexp, compare, eq, show, to_yojson]
+    [@@deriving sexp, compare, to_yojson]
 
     type attribute = {
       name: string;
@@ -54,59 +54,57 @@ module Response = struct
       kind: attribute_kind;
       final: bool;
     }
-    [@@deriving sexp, compare, eq, show, to_yojson]
+    [@@deriving sexp, compare, to_yojson]
 
     type type_at_location = {
       location: Location.t;
       annotation: Type.t;
     }
-    [@@deriving sexp, compare, eq, show, to_yojson]
+    [@@deriving sexp, compare, to_yojson]
 
     type types_at_path = {
-      path: PyrePath.t;
+      path: string;
       types: type_at_location list;
     }
-    [@@deriving sexp, compare, eq, show, to_yojson]
+    [@@deriving sexp, compare, to_yojson]
 
     type compatibility = {
       actual: Type.t;
       expected: Type.t;
       result: bool;
     }
-    [@@deriving sexp, compare, eq, show]
+    [@@deriving sexp, compare]
 
     type callee_with_instantiated_locations = {
       callee: Analysis.Callgraph.callee;
       locations: Location.WithPath.t list;
     }
-    [@@deriving sexp, compare, eq, show]
+    [@@deriving sexp, compare]
 
     type callees = {
       caller: Reference.t;
       callees: callee_with_instantiated_locations list;
     }
-    [@@deriving sexp, compare, eq, show]
+    [@@deriving sexp, compare]
 
     type parameter_representation = {
       parameter_name: string;
       parameter_annotation: Expression.t option;
     }
-    [@@deriving sexp, compare, eq, show]
+    [@@deriving sexp, compare]
 
     type define = {
       define_name: Reference.t;
       parameters: parameter_representation list;
       return_annotation: Expression.t option;
     }
-    [@@deriving sexp, compare, eq, show]
+    [@@deriving sexp, compare]
 
     type superclasses_mapping = {
       class_name: Reference.t;
       superclasses: Reference.t list;
     }
-    [@@deriving sexp, compare, eq, show, to_yojson]
-
-    let _ = show_compatibility (* unused, but pp is *)
+    [@@deriving sexp, compare, to_yojson]
 
     type t =
       | Boolean of bool
@@ -125,7 +123,7 @@ module Response = struct
       | Superclasses of superclasses_mapping list
       | Type of Type.t
       | TypesByPath of types_at_path list
-    [@@deriving sexp, compare, eq, show]
+    [@@deriving sexp, compare]
 
     let to_yojson response =
       let open Analysis in
@@ -228,7 +226,7 @@ module Response = struct
     | Single of Base.t
     | Batch of t list
     | Error of string
-  [@@deriving sexp, compare, eq, show]
+  [@@deriving sexp, compare]
 
   let rec to_yojson = function
     | Single base_response -> `Assoc ["response", Base.to_yojson base_response]
@@ -372,8 +370,8 @@ let rec parse_request_exn query =
             | _, invalid_decorators ->
                 InvalidQuery
                   (Format.asprintf
-                     "inline_decorators: invalid decorators `%s`"
-                     ([%show: Expression.t list] invalid_decorators))
+                     "inline_decorators: invalid decorators `(%s)`"
+                     (List.map invalid_decorators ~f:Expression.show |> String.concat ~sep:", "))
                 |> raise)
         | _ ->
             raise
@@ -447,7 +445,7 @@ module InlineDecorators = struct
           (Format.asprintf "Could not find function `%s`" (Reference.show function_reference))
 end
 
-let rec process_request ~environment ~configuration request =
+let rec process_request ~environment ~build_system ~configuration request =
   let process_request () =
     let module_tracker = TypeEnvironment.module_tracker environment in
     let read_only_environment = TypeEnvironment.read_only environment in
@@ -518,10 +516,9 @@ let rec process_request ~environment ~configuration request =
             | LookupProcessor.FileNotFound -> " (file not found)"
           in
           Format.asprintf
-            "%s%s`%a`%s"
+            "%s%s`%s`%s"
             sofar
             (if String.is_empty sofar then "" else ", ")
-            PyrePath.pp
             path
             (print_reason error_reason))
         errors
@@ -561,7 +558,8 @@ let rec process_request ~environment ~configuration request =
              ~default:
                (Error
                   (Format.sprintf "No class definition found for %s" (Reference.show annotation)))
-    | Batch requests -> Batch (List.map ~f:(process_request ~environment ~configuration) requests)
+    | Batch requests ->
+        Batch (List.map ~f:(process_request ~environment ~build_system ~configuration) requests)
     | Callees caller ->
         (* We don't yet support a syntax for fetching property setters. *)
         Single
@@ -629,7 +627,7 @@ let rec process_request ~environment ~configuration request =
               { Base.parameter_name = Identifier.sanitized name; parameter_annotation = annotation }
             in
             {
-              Base.define_name = Node.value name;
+              Base.define_name = name;
               parameters = List.map parameters ~f:represent_parameter;
               return_annotation;
             }
@@ -644,8 +642,7 @@ let rec process_request ~environment ~configuration request =
               {
                 Node.value =
                   {
-                    Statement.Define.signature =
-                      { Statement.Define.Signature.name = { Node.value = caller; _ }; _ };
+                    Statement.Define.signature = { Statement.Define.Signature.name = caller; _ };
                     _;
                   };
                 _;
@@ -724,12 +721,8 @@ let rec process_request ~environment ~configuration request =
         let annotation = Resolution.resolve_expression_to_type resolution expression in
         Single (Type annotation)
     | TypesInFiles paths ->
-        let paths =
-          let { Configuration.Analysis.local_root = root; _ } = configuration in
-          List.map ~f:(fun path -> Path.create_relative ~root ~relative:path) paths
-        in
         let annotations =
-          LookupProcessor.find_all_annotations_batch ~environment ~configuration ~paths
+          LookupProcessor.find_all_annotations_batch ~environment ~build_system ~configuration paths
         in
         let create_result { LookupProcessor.path; types_by_location } =
           match types_by_location with
@@ -816,7 +809,7 @@ let rec process_request ~environment ~configuration request =
            (Hash_set.to_list trace |> String.concat ~sep:", "))
 
 
-let parse_and_process_request ~environment ~configuration request =
+let parse_and_process_request ~environment ~build_system ~configuration request =
   match parse_request request with
   | Result.Error reason -> Response.Error reason
-  | Result.Ok request -> process_request ~environment ~configuration request
+  | Result.Ok request -> process_request ~environment ~build_system ~configuration request

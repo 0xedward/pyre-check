@@ -20,6 +20,10 @@ module DefaultContext = struct
 
   let define = +Test.mock_define
 
+  let resolution_fixpoint = None
+
+  let error_map = None
+
   module Builder = Callgraph.NullBuilder
 end
 
@@ -91,13 +95,13 @@ module Create (Context : TypeCheck.Context) = struct
   let create ?(bottom = false) ?(immutables = []) ~resolution annotations =
     let module State = State (Context) in
     if bottom then
-      State.create_unreachable ()
+      State.unreachable
     else
       let resolution =
         let annotation_store = create_annotation_store ~immutables annotations in
         Resolution.with_annotation_store resolution ~annotation_store
       in
-      State.create ~resolution ()
+      State.create ~resolution
 end
 
 let description ~resolution error =
@@ -126,6 +130,10 @@ let test_initial context =
       let qualifier = Reference.empty
 
       let define = +define
+
+      let resolution_fixpoint = Some (LocalAnnotationMap.empty ())
+
+      let error_map = Some (LocalErrorMap.empty ())
 
       module Builder = Callgraph.NullBuilder
     end
@@ -1202,6 +1210,8 @@ let test_forward_statement context =
     Format.asprintf "%s isinstance(%s, %s)" (if negated then "not" else "") variable type_expression
     |> assert_forward_expression;
     Format.asprintf "type(%s) %s %s" variable (if negated then "is not" else "is") type_expression
+    |> assert_forward_expression;
+    Format.asprintf "type(%s) %s %s" variable (if negated then "!=" else "==") type_expression
     |> assert_forward_expression
   in
   assert_refinement_by_type_comparison
@@ -1374,7 +1384,7 @@ let test_forward context =
         | _ -> failwith "unable to parse test"
       in
       List.fold
-        ~f:(fun state statement -> State.forward ~key:Cfg.entry_index ~statement state)
+        ~f:(fun state statement -> State.forward ~statement_key:Cfg.entry_index ~statement state)
         ~init:(create ~bottom:precondition_bottom precondition)
         parsed
     in

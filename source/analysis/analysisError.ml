@@ -674,11 +674,7 @@ let rec messages ~concise ~signature location kind =
     =
     location
   in
-  let {
-    Node.value = { Define.Signature.name = { Node.value = define_name; _ }; _ };
-    location = define_location;
-  }
-    =
+  let { Node.value = { Define.Signature.name = define_name; _ }; location = define_location } =
     signature
   in
   let show_sanitized_expression expression =
@@ -2121,14 +2117,14 @@ let rec messages ~concise ~signature location kind =
         "Did you forget to import it or assign to it?";
       ]
   | UninitializedLocal name when concise ->
-      [Format.asprintf "`%a` may not be initialized here." Identifier.pp_sanitized name]
+      [Format.asprintf "`%a` is undefined, or not always defined." Identifier.pp_sanitized name]
   | UninitializedLocal name ->
       [
         Format.asprintf
-          "Local variable `%a` may not be initialized here."
+          "Local variable `%a` is undefined, or not always defined."
           Identifier.pp_sanitized
           name;
-        "Check if along control flows the variable is defined.";
+        "Check if the variable is defined in all preceding branches of logic.";
       ]
   | UndefinedAttribute { attribute; origin } -> (
       let private_attribute_warning () =
@@ -2443,7 +2439,7 @@ module Instantiated = struct
       description = description ~show_error_traces ~concise:false ~separator:" ";
       long_description = description ~show_error_traces:true ~concise:false ~separator:"\n";
       concise_description = description ~show_error_traces ~concise:true ~separator:"\n";
-      define = Reference.show_sanitized (Reference.delocalize (Node.value signature.name));
+      define = Reference.show_sanitized (Reference.delocalize signature.name);
     }
 end
 

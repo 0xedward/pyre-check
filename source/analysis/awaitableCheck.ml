@@ -543,7 +543,7 @@ module State (Context : Context) = struct
     | _ -> state
 
 
-  let forward ~key state ~statement:{ Node.value; _ } =
+  let forward ~statement_key state ~statement:{ Node.value; _ } =
     let { Node.value = { Define.signature = { Define.Signature.parent; _ }; _ }; _ } =
       Context.define
     in
@@ -552,7 +552,7 @@ module State (Context : Context) = struct
         ~global_resolution:Context.global_resolution
         ~local_annotations:Context.local_annotations
         ~parent
-        ~key
+        ~statement_key
         (* TODO(T65923817): Eliminate the need of creating a dummy context here *)
         (module TypeCheck.DummyContext)
     in
@@ -603,7 +603,7 @@ module State (Context : Context) = struct
         state
 
 
-  let backward ~key:_ _ ~statement:_ = failwith "Not implemented"
+  let backward ~statement_key:_ _ ~statement:_ = failwith "Not implemented"
 end
 
 let name = "Awaitable"
@@ -622,9 +622,7 @@ let run
       let global_resolution = TypeEnvironment.ReadOnly.global_resolution environment
 
       let local_annotations =
-        TypeCheck.get_or_recompute_local_annotations
-          ~environment
-          (Node.value define |> Define.name |> Node.value)
+        TypeCheck.get_or_recompute_local_annotations ~environment (Node.value define |> Define.name)
     end
     in
     let module State = State (Context) in

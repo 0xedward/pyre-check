@@ -482,7 +482,7 @@ module ClassAttributes = struct
                       { signature = { name = callee; parent = Some parent; _ }; body; _ };
                   _;
                 }
-                when Reference.equal (Node.value callee) (Reference.create ~prefix:parent name) ->
+                when Reference.equal callee (Reference.create ~prefix:parent name) ->
                   Some body
               | _ -> None
             in
@@ -527,11 +527,7 @@ module ClassAttributes = struct
 
     let create
         ~location
-        ({
-           Define.signature =
-             { name = { Node.value = name; _ }; return_annotation; parameters; parent; _ };
-           _;
-         } as define)
+        ({ Define.signature = { name; return_annotation; parameters; parent; _ }; _ } as define)
       =
       let inspect_decorators name =
         let async = Define.is_async define in
@@ -590,7 +586,7 @@ module ClassAttributes = struct
     | _ -> right
 
 
-  let create ({ Class.name = { Node.value = parent_name; _ }; body; _ } as definition) =
+  let create ({ Class.name = parent_name; body; _ } as definition) =
     let explicitly_assigned_attributes =
       let assigned_attributes map { Node.location; value } =
         let open Expression in
@@ -802,9 +798,8 @@ module ClassAttributes = struct
       let callable_attributes =
         let callable_attributes map { Node.location; value } =
           match value with
-          | Statement.Define
-              ({ Define.signature = { name = { Node.value = target; _ }; _ } as signature; _ } as
-              define) ->
+          | Statement.Define ({ Define.signature = { name = target; _ } as signature; _ } as define)
+            ->
               Attribute.name (Expression.from_reference ~location target) ~parent:parent_name
               >>| (fun name ->
                     let attribute =
@@ -843,7 +838,7 @@ module ClassAttributes = struct
       let class_attributes =
         let callable_attributes map { Node.location; value } =
           match value with
-          | Statement.Class { name = { Node.value = name; _ }; _ } ->
+          | Statement.Class { name; _ } ->
               let open Expression in
               let annotation =
                 let meta_annotation =
@@ -1047,10 +1042,7 @@ module ClassSummary = struct
   }
   [@@deriving compare, eq, sexp, show, hash]
 
-  let create
-      ~qualifier
-      ({ Ast.Statement.Class.name = { Node.value = name; _ }; decorators; _ } as class_definition)
-    =
+  let create ~qualifier ({ Ast.Statement.Class.name; decorators; _ } as class_definition) =
     let bases =
       {
         base_classes = Ast.Statement.Class.base_classes class_definition;

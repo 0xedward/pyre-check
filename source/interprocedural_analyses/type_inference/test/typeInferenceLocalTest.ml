@@ -22,6 +22,10 @@ let assert_backward ~resolution precondition statement postcondition =
     let configuration = configuration
 
     let define = +mock_define
+
+    let resolution_fixpoint = Some (LocalAnnotationMap.empty ())
+
+    let error_map = Some (TypeCheck.LocalErrorMap.empty ())
   end)
   in
   let create annotations =
@@ -57,7 +61,7 @@ let assert_backward ~resolution precondition statement postcondition =
   assert_state_equal
     (create postcondition)
     (List.fold_right
-       ~f:(fun statement state -> State.backward ~key:Cfg.exit_index state ~statement)
+       ~f:(fun statement state -> State.backward ~statement_key:Cfg.exit_index state ~statement)
        ~init:(create precondition)
        parsed)
 
